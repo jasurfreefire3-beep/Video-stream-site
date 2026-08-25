@@ -1,0 +1,6 @@
+{
+  "name": "Animem.uz Video CDN & Stream Server",
+  "description": "Animem.uz uchun ultra-tezkor HLS (HTTP Live Streaming m3u8 + TS) va MP4 Range 206 video oqim tizimi, PostgreSQL (Wasmer) xotirasi, hotlink domen himoyasi hamda Iframe/HLS embed generatori.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
