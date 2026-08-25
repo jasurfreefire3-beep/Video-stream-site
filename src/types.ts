@@ -15,6 +15,10 @@ export interface VideoRecord {
   is_active: boolean | number;
   allowed_domain: string;
   poster_url?: string;
+  description?: string;
+  genres?: string;
+  release_year?: number;
+  metadata?: Record<string, any>;
   created_at: string;
   updated_at?: string;
   hls_url?: string;
@@ -46,6 +50,9 @@ export interface UploadMetadata {
   language: string;
   poster_url?: string;
   allowed_domain?: string;
+  description?: string;
+  genres?: string;
+  release_year?: number;
 }
 
 export interface PlayerTokenResponse {

@@ -13,7 +13,7 @@ import {
 } from './db.js';
 import { verifyAdminPassword, generateAdminToken, requireAdminAuth, AuthRequest } from './auth.js';
 import { isRequestAuthorized, generateStreamToken, getAllowedDomains, updateAllowedDomains } from './security.js';
-import { handleVideoStream } from './stream.js';
+import { handleVideoStream, restoreVideoFromPostgres } from './stream.js';
 import { convertMp4ToHls, isHlsReady, getHlsDir } from './hls.js';
 
 const router = express.Router();
@@ -212,6 +212,10 @@ router.post('/videos/upload-chunk-complete', requireAdminAuth, async (req: AuthR
       duration,
       poster_url,
       allowed_domain,
+      description,
+      genres,
+      release_year,
+      metadata,
     } = req.body;
 
     if (!uploadId || !totalChunks) {
@@ -262,6 +266,10 @@ router.post('/videos/upload-chunk-complete', requireAdminAuth, async (req: AuthR
     const vidLang = language || 'O\'zbekcha (Tarjima)';
     const vidDuration = parseFloat(duration) || 0;
     const vidDomain = allowed_domain || 'animem.uz';
+    const vidDesc = description || null;
+    const vidGenres = genres || null;
+    const vidYear = release_year ? parseInt(release_year, 10) : null;
+    const vidMeta = metadata || null;
 
     const videoRecord = {
       id: videoId,
@@ -280,6 +288,10 @@ router.post('/videos/upload-chunk-complete', requireAdminAuth, async (req: AuthR
       is_active: true,
       allowed_domain: vidDomain,
       poster_url: poster_url || null,
+      description: vidDesc,
+      genres: vidGenres,
+      release_year: vidYear,
+      metadata: vidMeta,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -287,28 +299,48 @@ router.post('/videos/upload-chunk-complete', requireAdminAuth, async (req: AuthR
     // Save metadata immediately to PostgreSQL and local storage
     try {
       const pool = await getDbPool();
-      await pool.query(
-        `INSERT INTO videos (
-          id, title, anime_title, episode_number, season_number, quality, language,
-          file_name, file_path, file_size, duration, mime_type, allowed_domain, poster_url
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-        [
-          videoId,
-          videoTitle,
-          animeTitle,
-          epNum,
-          seasonNum,
-          vidQuality,
-          vidLang,
-          finalFileName,
-          finalFilePath,
-          totalSize,
-          vidDuration,
-          'video/mp4',
-          vidDomain,
-          poster_url || null,
-        ]
-      );
+      if (pool) {
+        await pool.query(
+          `INSERT INTO videos (
+            id, title, anime_title, episode_number, season_number, quality, language,
+            file_name, file_path, file_size, duration, mime_type, allowed_domain, poster_url,
+            description, genres, release_year, metadata
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+          ON CONFLICT (id) DO UPDATE SET
+            title = EXCLUDED.title,
+            anime_title = EXCLUDED.anime_title,
+            episode_number = EXCLUDED.episode_number,
+            season_number = EXCLUDED.season_number,
+            quality = EXCLUDED.quality,
+            language = EXCLUDED.language,
+            poster_url = EXCLUDED.poster_url,
+            description = EXCLUDED.description,
+            genres = EXCLUDED.genres,
+            release_year = EXCLUDED.release_year,
+            metadata = EXCLUDED.metadata,
+            updated_at = NOW()`,
+          [
+            videoId,
+            videoTitle,
+            animeTitle,
+            epNum,
+            seasonNum,
+            vidQuality,
+            vidLang,
+            finalFileName,
+            finalFilePath,
+            totalSize,
+            vidDuration,
+            'video/mp4',
+            vidDomain,
+            poster_url || null,
+            vidDesc,
+            vidGenres,
+            vidYear,
+            vidMeta ? JSON.stringify(vidMeta) : null,
+          ]
+        );
+      }
 
       // Asynchronous background chunk backup into PostgreSQL so upload completes in 0.1s
       setTimeout(async () => {
@@ -390,6 +422,10 @@ router.post('/videos/upload', requireAdminAuth, upload.single('video'), async (r
       duration,
       poster_url,
       allowed_domain,
+      description,
+      genres,
+      release_year,
+      metadata,
     } = req.body;
 
     const videoId = 'vid_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 7);
@@ -401,6 +437,10 @@ router.post('/videos/upload', requireAdminAuth, upload.single('video'), async (r
     const vidLang = language || 'O\'zbekcha (Tarjima)';
     const vidDuration = parseFloat(duration) || 0;
     const vidDomain = allowed_domain || 'animem.uz';
+    const vidDesc = description || null;
+    const vidGenres = genres || null;
+    const vidYear = release_year ? parseInt(release_year, 10) : null;
+    const vidMeta = metadata || null;
 
     const videoRecord = {
       id: videoId,
@@ -419,34 +459,58 @@ router.post('/videos/upload', requireAdminAuth, upload.single('video'), async (r
       is_active: true,
       allowed_domain: vidDomain,
       poster_url: poster_url || null,
+      description: vidDesc,
+      genres: vidGenres,
+      release_year: vidYear,
+      metadata: vidMeta,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
 
     try {
       const pool = await getDbPool();
-      await pool.query(
-        `INSERT INTO videos (
-          id, title, anime_title, episode_number, season_number, quality, language,
-          file_name, file_path, file_size, duration, mime_type, allowed_domain, poster_url
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-        [
-          videoId,
-          videoTitle,
-          animeTitle,
-          epNum,
-          seasonNum,
-          vidQuality,
-          vidLang,
-          req.file.filename,
-          req.file.path,
-          req.file.size,
-          vidDuration,
-          req.file.mimetype || 'video/mp4',
-          vidDomain,
-          poster_url || null,
-        ]
-      );
+      if (pool) {
+        await pool.query(
+          `INSERT INTO videos (
+            id, title, anime_title, episode_number, season_number, quality, language,
+            file_name, file_path, file_size, duration, mime_type, allowed_domain, poster_url,
+            description, genres, release_year, metadata
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+          ON CONFLICT (id) DO UPDATE SET
+            title = EXCLUDED.title,
+            anime_title = EXCLUDED.anime_title,
+            episode_number = EXCLUDED.episode_number,
+            season_number = EXCLUDED.season_number,
+            quality = EXCLUDED.quality,
+            language = EXCLUDED.language,
+            poster_url = EXCLUDED.poster_url,
+            description = EXCLUDED.description,
+            genres = EXCLUDED.genres,
+            release_year = EXCLUDED.release_year,
+            metadata = EXCLUDED.metadata,
+            updated_at = NOW()`,
+          [
+            videoId,
+            videoTitle,
+            animeTitle,
+            epNum,
+            seasonNum,
+            vidQuality,
+            vidLang,
+            req.file.filename,
+            req.file.path,
+            req.file.size,
+            vidDuration,
+            req.file.mimetype || 'video/mp4',
+            vidDomain,
+            poster_url || null,
+            vidDesc,
+            vidGenres,
+            vidYear,
+            vidMeta ? JSON.stringify(vidMeta) : null,
+          ]
+        );
+      }
 
       const fileBuffer = fs.readFileSync(req.file.path);
       const CHUNK_SIZE = 5 * 1024 * 1024;
@@ -615,24 +679,57 @@ router.get('/videos/:id', async (req: Request, res: Response) => {
 // Update video metadata
 router.put('/videos/:id', requireAdminAuth, async (req: AuthRequest, res: Response) => {
   try {
-    const { title, anime_title, episode_number, season_number, quality, language, poster_url, allowed_domain } = req.body;
+    const {
+      title,
+      anime_title,
+      episode_number,
+      season_number,
+      quality,
+      language,
+      poster_url,
+      allowed_domain,
+      description,
+      genres,
+      release_year,
+      metadata,
+    } = req.body;
     
     try {
       const pool = await getDbPool();
-      await pool.query(
-        `UPDATE videos SET
-          title = COALESCE($1, title),
-          anime_title = COALESCE($2, anime_title),
-          episode_number = COALESCE($3, episode_number),
-          season_number = COALESCE($4, season_number),
-          quality = COALESCE($5, quality),
-          language = COALESCE($6, language),
-          poster_url = COALESCE($7, poster_url),
-          allowed_domain = COALESCE($8, allowed_domain),
-          updated_at = NOW()
-        WHERE id = $9`,
-        [title, anime_title, episode_number, season_number, quality, language, poster_url, allowed_domain, req.params.id]
-      );
+      if (pool) {
+        await pool.query(
+          `UPDATE videos SET
+            title = COALESCE($1, title),
+            anime_title = COALESCE($2, anime_title),
+            episode_number = COALESCE($3, episode_number),
+            season_number = COALESCE($4, season_number),
+            quality = COALESCE($5, quality),
+            language = COALESCE($6, language),
+            poster_url = COALESCE($7, poster_url),
+            allowed_domain = COALESCE($8, allowed_domain),
+            description = COALESCE($9, description),
+            genres = COALESCE($10, genres),
+            release_year = COALESCE($11, release_year),
+            metadata = COALESCE($12, metadata),
+            updated_at = NOW()
+          WHERE id = $13`,
+          [
+            title,
+            anime_title,
+            episode_number ? parseInt(episode_number, 10) : null,
+            season_number ? parseInt(season_number, 10) : null,
+            quality,
+            language,
+            poster_url,
+            allowed_domain,
+            description,
+            genres,
+            release_year ? parseInt(release_year, 10) : null,
+            metadata ? JSON.stringify(metadata) : null,
+            req.params.id,
+          ]
+        );
+      }
     } catch (e) {
       // ignore
     }
@@ -641,16 +738,20 @@ router.put('/videos/:id', requireAdminAuth, async (req: AuthRequest, res: Respon
       id: req.params.id,
       title,
       anime_title,
-      episode_number: parseInt(episode_number, 10),
-      season_number: parseInt(season_number, 10),
+      episode_number: episode_number ? parseInt(episode_number, 10) : undefined,
+      season_number: season_number ? parseInt(season_number, 10) : undefined,
       quality,
       language,
       poster_url,
       allowed_domain,
+      description,
+      genres,
+      release_year: release_year ? parseInt(release_year, 10) : undefined,
+      metadata,
       updated_at: new Date().toISOString(),
     });
 
-    res.json({ success: true, message: 'Video ma\'lumotlari yangilandi.' });
+    res.json({ success: true, message: 'Video va uning barcha metama\'lumotlari PostgreSQL ga saqlandi.' });
   } catch (err: any) {
     res.status(500).json({ error: 'Yangilashda xatolik: ' + err.message });
   }
@@ -740,11 +841,27 @@ router.get('/hls/:id/:file?', async (req: Request, res: Response) => {
 
     const hlsDir = getHlsDir(videoId);
     const m3u8Path = path.join(hlsDir, 'index.m3u8');
+    
+    let filePath = video.file_path;
+    const fileName = video.file_name || (filePath ? path.basename(filePath) : `${video.id}.mp4`);
+    const UPLOAD_DIR = path.join(process.cwd(), 'uploads', 'videos');
+    const localUploadPath = path.join(UPLOAD_DIR, fileName);
+    
+    if (fs.existsSync(localUploadPath)) {
+      filePath = localUploadPath;
+    }
 
     // If HLS does not exist yet, generate on the fly
     if (!fs.existsSync(m3u8Path)) {
-      if (fs.existsSync(video.file_path)) {
-        await convertMp4ToHls(videoId, video.file_path);
+      let mp4Exists = fs.existsSync(filePath);
+      if (!mp4Exists) {
+        console.log(`[HLS] MP4 not found on disk. Restoring from PostgreSQL for ${videoId}...`);
+        mp4Exists = await restoreVideoFromPostgres(videoId, localUploadPath);
+        if (mp4Exists) filePath = localUploadPath;
+      }
+      
+      if (mp4Exists) {
+        await convertMp4ToHls(videoId, filePath);
       } else {
         return res.status(404).json({ error: 'HLS video fayli mavjud emas.' });
       }

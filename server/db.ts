@@ -144,6 +144,7 @@ export async function getDbPool(): Promise<pg.Pool | null> {
 
 export async function initDatabaseTables(dbPool: pg.Pool) {
   try {
+    // 1. Create primary videos table
     await dbPool.query(`
       CREATE TABLE IF NOT EXISTS videos (
         id VARCHAR(64) PRIMARY KEY,
@@ -162,6 +163,10 @@ export async function initDatabaseTables(dbPool: pg.Pool) {
         is_active BOOLEAN DEFAULT TRUE,
         allowed_domain VARCHAR(255) DEFAULT 'animem.uz',
         poster_url TEXT NULL,
+        description TEXT NULL,
+        genres VARCHAR(255) NULL,
+        release_year INT NULL,
+        metadata JSONB NULL,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       );
@@ -169,6 +174,15 @@ export async function initDatabaseTables(dbPool: pg.Pool) {
       CREATE INDEX IF NOT EXISTS idx_videos_episode ON videos(episode_number);
     `);
 
+    // Ensure newly added metadata columns exist on existing databases (safe migrations)
+    await dbPool.query(`
+      ALTER TABLE videos ADD COLUMN IF NOT EXISTS description TEXT NULL;
+      ALTER TABLE videos ADD COLUMN IF NOT EXISTS genres VARCHAR(255) NULL;
+      ALTER TABLE videos ADD COLUMN IF NOT EXISTS release_year INT NULL;
+      ALTER TABLE videos ADD COLUMN IF NOT EXISTS metadata JSONB NULL;
+    `);
+
+    // 2. Video raw/stream chunks storage table
     await dbPool.query(`
       CREATE TABLE IF NOT EXISTS video_chunks (
         video_id VARCHAR(64) NOT NULL,
@@ -182,6 +196,7 @@ export async function initDatabaseTables(dbPool: pg.Pool) {
       CREATE INDEX IF NOT EXISTS idx_video_chunks_id ON video_chunks(video_id);
     `);
 
+    // 3. Stream protection tokens
     await dbPool.query(`
       CREATE TABLE IF NOT EXISTS stream_tokens (
         id SERIAL PRIMARY KEY,
@@ -196,6 +211,7 @@ export async function initDatabaseTables(dbPool: pg.Pool) {
       CREATE INDEX IF NOT EXISTS idx_stream_tokens_expires ON stream_tokens(expires_at);
     `);
 
+    // 4. Global CDN settings
     await dbPool.query(`
       CREATE TABLE IF NOT EXISTS cdn_settings (
         setting_key VARCHAR(64) PRIMARY KEY,
@@ -208,6 +224,71 @@ export async function initDatabaseTables(dbPool: pg.Pool) {
     `);
 
     console.log('[PostgreSQL] Database tables & schemas verified');
+
+    // 5. Automatic Synchronisation: Load all videos from PostgreSQL
+    const res = await dbPool.query('SELECT * FROM videos ORDER BY created_at DESC');
+    if (res.rows && res.rows.length > 0) {
+      localVideosStore = res.rows.map((row: any) => ({
+        ...row,
+        file_size: parseInt(row.file_size || '0', 10),
+        duration: parseFloat(row.duration || '0'),
+        views_count: parseInt(row.views_count || '0', 10),
+      }));
+      saveLocalStore();
+      console.log(`[PostgreSQL] ${res.rows.length} ta video ma'lumotlari yuklandi va sinxronlandi`);
+    } else if (localVideosStore.length > 0) {
+      // Sync local videos to PostgreSQL if table is freshly created
+      for (const v of localVideosStore) {
+        try {
+          await dbPool.query(
+            `INSERT INTO videos (
+              id, title, anime_title, episode_number, season_number, quality, language,
+              file_name, file_path, file_size, duration, mime_type, views_count,
+              allowed_domain, poster_url, description, genres, release_year, metadata,
+              created_at, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+            ON CONFLICT (id) DO UPDATE SET
+              title = EXCLUDED.title,
+              anime_title = EXCLUDED.anime_title,
+              episode_number = EXCLUDED.episode_number,
+              season_number = EXCLUDED.season_number,
+              quality = EXCLUDED.quality,
+              language = EXCLUDED.language,
+              poster_url = EXCLUDED.poster_url,
+              description = EXCLUDED.description,
+              genres = EXCLUDED.genres,
+              release_year = EXCLUDED.release_year,
+              updated_at = NOW()`,
+            [
+              v.id,
+              v.title || 'Anime',
+              v.anime_title || 'Anime',
+              v.episode_number || 1,
+              v.season_number || 1,
+              v.quality || '1080p',
+              v.language || 'O\'zbekcha (Tarjima)',
+              v.file_name || 'video.mp4',
+              v.file_path || '',
+              v.file_size || 0,
+              v.duration || 0,
+              v.mime_type || 'video/mp4',
+              v.views_count || 0,
+              v.allowed_domain || 'animem.uz',
+              v.poster_url || null,
+              v.description || null,
+              v.genres || null,
+              v.release_year || null,
+              v.metadata ? JSON.stringify(v.metadata) : null,
+              v.created_at || new Date().toISOString(),
+              v.updated_at || new Date().toISOString(),
+            ]
+          );
+        } catch (syncErr: any) {
+          console.warn('[PostgreSQL Sync Warning]:', syncErr.message);
+        }
+      }
+      console.log(`[PostgreSQL] ${localVideosStore.length} ta lokal video bazaga saqlandi`);
+    }
   } catch (err: any) {
     console.warn('[PostgreSQL] Table init notice:', err.message);
   }

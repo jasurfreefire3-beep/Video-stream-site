@@ -112,15 +112,14 @@ export async function handleVideoStream(req: Request, res: Response, videoRecord
   }
 }
 
-async function restoreVideoFromPostgres(videoId: string, targetPath: string): Promise<boolean> {
+export async function restoreVideoFromPostgres(videoId: string, targetPath: string): Promise<boolean> {
   try {
     const pool = await getDbPool();
-    const result = await pool.query(
-      `SELECT chunk_index, data FROM video_chunks WHERE video_id = $1 ORDER BY chunk_index ASC`,
-      [videoId]
-    );
+    // Check if video has chunks
+    const chunkCountRes = await pool.query('SELECT COUNT(*) as count FROM video_chunks WHERE video_id = $1', [videoId]);
+    const totalChunks = parseInt(chunkCountRes.rows[0].count, 10);
 
-    if (result.rows.length === 0) {
+    if (totalChunks === 0) {
       return false;
     }
 
@@ -130,9 +129,18 @@ async function restoreVideoFromPostgres(videoId: string, targetPath: string): Pr
     }
 
     const writeStream = fs.createWriteStream(targetPath);
-    for (const row of result.rows) {
-      writeStream.write(row.data);
+    console.log(`[PostgreSQL] Restoring video (${videoId}) to disk cache in ${totalChunks} chunks...`);
+
+    for (let c = 0; c < totalChunks; c++) {
+      const res = await pool.query(
+        `SELECT data FROM video_chunks WHERE video_id = $1 AND chunk_index = $2`,
+        [videoId, c]
+      );
+      if (res.rows.length > 0) {
+        writeStream.write(res.rows[0].data);
+      }
     }
+    
     writeStream.end();
 
     await new Promise<void>((resolve, reject) => {
