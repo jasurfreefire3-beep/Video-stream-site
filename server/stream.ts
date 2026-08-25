@@ -123,6 +123,17 @@ export async function restoreVideoFromPostgres(videoId: string, targetPath: stri
       return false;
     }
 
+    // Verify if backup is complete
+    const videoRes = await pool.query('SELECT file_size FROM videos WHERE id = $1', [videoId]);
+    if (videoRes.rows.length > 0) {
+      const fileSize = parseInt(videoRes.rows[0].file_size, 10);
+      const expectedChunks = Math.ceil(fileSize / (5 * 1024 * 1024));
+      if (totalChunks < expectedChunks) {
+        console.error(`[PostgreSQL] Warning: Video (${videoId}) backup is incomplete. Found ${totalChunks}/${expectedChunks} chunks.`);
+        // Note: we still try to restore what we have, as partial video is better than no video.
+      }
+    }
+
     const dir = path.dirname(targetPath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -152,6 +163,52 @@ export async function restoreVideoFromPostgres(videoId: string, targetPath: stri
     return true;
   } catch (err) {
     console.error(`[PostgreSQL] Failed to restore video from database:`, err);
+    return false;
+  }
+}
+
+export async function backupVideoToPostgres(videoId: string, filePath: string) {
+  try {
+    const pool = await getDbPool();
+    if (!pool || !fs.existsSync(filePath)) return false;
+
+    console.log(`[PostgreSQL] Starting background backup for video ${videoId}...`);
+    
+    // Check if it already exists (resume/skip check)
+    const existingRes = await pool.query('SELECT COUNT(*) as count FROM video_chunks WHERE video_id = $1', [videoId]);
+    const existingChunks = parseInt(existingRes.rows[0].count, 10);
+    
+    const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
+    const stats = fs.statSync(filePath);
+    const totalChunks = Math.ceil(stats.size / CHUNK_SIZE);
+    
+    if (existingChunks >= totalChunks) {
+      console.log(`[PostgreSQL] Backup for ${videoId} already complete.`);
+      return true;
+    }
+    
+    // Open file to read chunks safely without huge RAM allocations
+    const fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(CHUNK_SIZE);
+
+    for (let c = 0; c < totalChunks; c++) {
+      const bytesRead = fs.readSync(fd, buffer, 0, CHUNK_SIZE, c * CHUNK_SIZE);
+      if (bytesRead > 0) {
+        const slice = buffer.subarray(0, bytesRead);
+        await pool.query(
+          `INSERT INTO video_chunks (video_id, chunk_index, data, chunk_size)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (video_id, chunk_index) DO UPDATE SET data = $3, chunk_size = $4`,
+          [videoId, c, slice, bytesRead]
+        );
+      }
+    }
+    
+    fs.closeSync(fd);
+    console.log(`[PostgreSQL] Video (${videoId}) successfully backed up in ${totalChunks} chunks.`);
+    return true;
+  } catch (err) {
+    console.error(`[PostgreSQL] Failed to backup video ${videoId}:`, err);
     return false;
   }
 }

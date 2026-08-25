@@ -13,7 +13,7 @@ import {
 } from './db.js';
 import { verifyAdminPassword, generateAdminToken, requireAdminAuth, AuthRequest } from './auth.js';
 import { isRequestAuthorized, generateStreamToken, getAllowedDomains, updateAllowedDomains } from './security.js';
-import { handleVideoStream, restoreVideoFromPostgres } from './stream.js';
+import { handleVideoStream, restoreVideoFromPostgres, backupVideoToPostgres } from './stream.js';
 import { convertMp4ToHls, isHlsReady, getHlsDir } from './hls.js';
 
 const router = express.Router();
@@ -342,26 +342,11 @@ router.post('/videos/upload-chunk-complete', requireAdminAuth, async (req: AuthR
         );
       }
 
-      // Asynchronous background chunk backup into PostgreSQL so upload completes in 0.1s
-      setTimeout(async () => {
-        try {
-          if (fs.existsSync(finalFilePath)) {
-            const fileBuf = fs.readFileSync(finalFilePath);
-            const CHUNK_SIZE = 5 * 1024 * 1024;
-            const chunkCount = Math.ceil(fileBuf.length / CHUNK_SIZE);
-            for (let c = 0; c < chunkCount; c++) {
-              const slice = fileBuf.subarray(c * CHUNK_SIZE, Math.min(fileBuf.length, (c + 1) * CHUNK_SIZE));
-              await pool.query(
-                `INSERT INTO video_chunks (video_id, chunk_index, data, chunk_size)
-                 VALUES ($1, $2, $3, $4)
-                 ON CONFLICT (video_id, chunk_index) DO UPDATE SET data = $3, chunk_size = $4`,
-                [videoId, c, slice, slice.length]
-              );
-            }
-          }
-        } catch (bgErr) {
-          console.warn('[Background PG Chunk Backup Warning]:', bgErr);
-        }
+      // Asynchronous background chunk backup into PostgreSQL
+      setTimeout(() => {
+        backupVideoToPostgres(videoId, finalFilePath).catch(err => {
+          console.warn('[Background PG Chunk Backup Warning]:', err);
+        });
       }, 100);
     } catch (pgErr: any) {
       console.warn('[PostgreSQL Save Warning, falling back to local]', pgErr.message);
@@ -512,18 +497,12 @@ router.post('/videos/upload', requireAdminAuth, upload.single('video'), async (r
         );
       }
 
-      const fileBuffer = fs.readFileSync(req.file.path);
-      const CHUNK_SIZE = 5 * 1024 * 1024;
-      const totalChunks = Math.ceil(fileBuffer.length / CHUNK_SIZE);
-      for (let c = 0; c < totalChunks; c++) {
-        const slice = fileBuffer.subarray(c * CHUNK_SIZE, Math.min(fileBuffer.length, (c + 1) * CHUNK_SIZE));
-        await pool.query(
-          `INSERT INTO video_chunks (video_id, chunk_index, data, chunk_size)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (video_id, chunk_index) DO UPDATE SET data = $3, chunk_size = $4`,
-          [videoId, c, slice, slice.length]
-        );
-      }
+      // Asynchronous background chunk backup into PostgreSQL
+      setTimeout(() => {
+        backupVideoToPostgres(videoId, req.file!.path).catch(err => {
+          console.warn('[Background PG Chunk Backup Warning]:', err);
+        });
+      }, 100);
     } catch (pgErr: any) {
       console.warn('[PostgreSQL Upload Warning, saving locally]', pgErr.message);
     }
