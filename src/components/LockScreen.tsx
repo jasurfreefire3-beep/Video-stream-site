@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Lock, ShieldCheck, Play, KeyRound, AlertCircle, Sparkles } from 'lucide-react';
+import { Lock, ShieldCheck, Play, KeyRound, AlertCircle } from 'lucide-react';
 
 interface LockScreenProps {
   onUnlock: (token: string) => void;
@@ -42,10 +42,6 @@ export const LockScreen: React.FC<LockScreenProps> = ({ onUnlock }) => {
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const handleQuickFill = () => {
-    setPassword('1213234');
   };
 
   return (
@@ -123,23 +119,12 @@ export const LockScreen: React.FC<LockScreenProps> = ({ onUnlock }) => {
         </form>
 
         {/* Footer Security Badges */}
-        <div className="mt-8 pt-6 border-t border-slate-800/80 flex flex-col gap-3">
-          <div className="flex items-center justify-between text-xs text-slate-400">
-            <div className="flex items-center gap-1.5 text-emerald-400">
-              <ShieldCheck className="w-4 h-4" />
-              <span>Domen himoyalangan (animem.uz)</span>
-            </div>
-            <button
-              onClick={handleQuickFill}
-              className="text-slate-500 hover:text-slate-300 text-[11px] underline underline-offset-2 flex items-center gap-1 transition-colors"
-            >
-              <Sparkles className="w-3 h-3 text-amber-400" />
-              <span>Parol: 1213234</span>
-            </button>
+        <div className="mt-8 pt-6 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
+          <div className="flex items-center gap-1.5 text-emerald-400">
+            <ShieldCheck className="w-4 h-4" />
+            <span>Domen himoyasi faol (animem.uz)</span>
           </div>
-          <div className="text-[11px] text-slate-400 text-center font-mono">
-            PostgreSQL: psql.fr-roub1.bengt.wasmernet.com:20184 (video)
-          </div>
+          <span className="text-slate-500 font-mono text-[11px]">SSL Secure • 256-bit</span>
         </div>
 
       </div>

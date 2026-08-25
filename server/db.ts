@@ -43,7 +43,7 @@ let dbConfig = {
   port: parseInt(process.env.PG_PORT || process.env.POSTGRES_PORT || '20184', 10),
   database: process.env.PG_DATABASE || process.env.POSTGRES_DB || 'video',
   user: process.env.PG_USER || process.env.POSTGRES_USER || 'user_9f0a1bbd',
-  password: process.env.PG_PASSWORD || process.env.POSTGRES_PASSWORD || 'pw_Nkmiu3Ab8L9fPXRfjABNHImvr6carZ0',
+  password: process.env.PG_PASSWORD || process.env.POSTGRES_PASSWORD || 'pw_Nkmiu3Ab8L9fPXRfjABNHImvr6carZO',
   type: 'PostgreSQL',
 };
 
