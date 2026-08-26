@@ -55,6 +55,7 @@ export const AnimemPlayer: React.FC<AnimemPlayerProps> = ({
   const [subtitleEnabled, setSubtitleEnabled] = useState(false);
   const [subtitleStatus, setSubtitleStatus] = useState<string | null>(null);
 
+
   const handleGenerateSubtitles = async () => {
     const token = localStorage.getItem('animem_cdn_token') || '';
     setIsGeneratingSubtitle(true);
@@ -358,8 +359,7 @@ export const AnimemPlayer: React.FC<AnimemPlayerProps> = ({
       ref={containerRef}
       onMouseMove={handleMouseMove}
       onMouseLeave={() => isPlaying && setShowControls(false)}
-      className="relative w-full h-full bg-black rounded-2xl overflow-hidden select-none group flex items-center justify-center shadow-2xl border border-slate-800"
-      style={{ minHeight: '360px', aspectRatio: '16/9' }}
+      className="relative w-full h-full bg-black overflow-hidden select-none group flex items-center justify-center"
     >
       {/* HTML5 Video Element */}
       <video
@@ -449,13 +449,24 @@ export const AnimemPlayer: React.FC<AnimemPlayerProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
-          <span className="text-[10px] px-2 py-0.5 rounded bg-slate-900/90 border border-slate-700 text-slate-300 font-mono">
+          <span className="text-[10px] px-2 py-0.5 rounded bg-slate-900/90 border border-slate-700 text-slate-300 font-mono hidden sm:inline-block">
             {video.quality || '1080p'}
           </span>
-          <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 font-mono font-bold flex items-center gap-1">
+          <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 font-mono font-bold hidden md:flex items-center gap-1">
             <Zap className="w-3 h-3 text-emerald-400 animate-pulse" />
             ⚡ CLOUDFLARE FAST DIRECT MP4
           </span>
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg bg-slate-800/80 hover:bg-rose-600 text-white transition-colors"
+              title="Yopish"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path>
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 
@@ -583,6 +594,8 @@ export const AnimemPlayer: React.FC<AnimemPlayerProps> = ({
                 </a>
               )}
             </div>
+
+
 
             {/* Speed Menu Toggle */}
             <div className="relative">

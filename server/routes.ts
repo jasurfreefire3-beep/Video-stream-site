@@ -25,6 +25,8 @@ if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
+
+
 const TEMP_DIR = path.join(process.cwd(), 'uploads', 'temp');
 if (!fs.existsSync(TEMP_DIR)) {
   fs.mkdirSync(TEMP_DIR, { recursive: true });
@@ -862,36 +864,32 @@ router.get('/hls/:id/:file?', async (req: Request, res: Response) => {
       if (preview) queryParams.push(`preview=1`);
       const queryString = queryParams.length > 0 ? `?${queryParams.join('&')}` : '';
 
-      // If user opens .m3u8 directly in browser address bar (HTML request), serve an embedded player page
-      if (req.headers.accept?.includes('text/html')) {
+      // If user opens .m3u8 directly in browser address bar (HTML request) and raw is not requested, serve clean fullscreen player
+      if (req.headers.accept?.includes('text/html') && req.query.raw !== '1' && req.headers['sec-fetch-dest'] !== 'empty') {
+        const rawM3u8Url = `/api/hls/${videoId}/index.m3u8${queryString ? queryString + '&raw=1' : '?raw=1'}`;
         const playerHtml = `<!DOCTYPE html>
 <html lang="uz">
 <head>
   <meta charset="UTF-8">
-  <title>Animem.uz - ${video.title || videoId}</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>${video.title || videoId}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+    video { width: 100%; height: 100%; object-fit: contain; background: #000; outline: none; border: none; display: block; }
+  </style>
   <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 </head>
-<body class="bg-slate-950 text-slate-100 flex flex-col items-center justify-center min-h-screen p-4">
-  <div class="w-full max-w-4xl bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
-    <div class="p-4 border-b border-slate-800 flex items-center justify-between">
-      <div class="flex items-center gap-2">
-        <div class="w-3 h-3 rounded-full bg-rose-500 animate-pulse"></div>
-        <h1 class="font-bold text-sm text-slate-200">Animem.uz Secure Stream (${video.title || videoId})</h1>
-      </div>
-      <a href="/api/stream/${videoId}${queryString}" download class="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold transition-all">
-        MP4 Yuklab olish
-      </a>
-    </div>
-    <div class="relative aspect-video bg-black flex items-center justify-center">
-      <video id="video" controls autoplay class="w-full h-full object-contain"></video>
-    </div>
-  </div>
+<body>
+  <video id="video" controls autoplay playsinline></video>
   <script>
     const video = document.getElementById('video');
-    const videoSrc = window.location.href;
+    const videoSrc = "${rawM3u8Url}";
     if (Hls.isSupported()) {
-      const hls = new Hls();
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true
+      });
       hls.loadSource(videoSrc);
       hls.attachMedia(video);
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
