@@ -5,8 +5,12 @@ import fs from 'fs';
 
 // Configure ffmpeg binary path
 if (ffmpegInstaller && ffmpegInstaller.path) {
-  ffmpeg.setFfmpegPath(ffmpegInstaller.path);
-  console.log('[HLS Engine] FFmpeg loaded from:', ffmpegInstaller.path);
+  try {
+    ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+    console.log('[HLS Engine] FFmpeg loaded from:', ffmpegInstaller.path);
+  } catch (e) {
+    console.warn('[HLS Engine] Could not set FFmpeg path:', e);
+  }
 }
 
 const HLS_BASE_DIR = path.join(process.cwd(), 'uploads', 'hls');
@@ -28,8 +32,7 @@ export function isHlsReady(videoId: string): boolean {
 }
 
 /**
- * Super-fast near zero-RAM HLS segmenter using codec copy (takes 1-3 seconds).
- * Restores blazing speed for video uploads.
+ * Super-fast near zero-RAM HLS segmenter with automatic fallback.
  */
 export async function convertMp4ToHls(videoId: string, videoPath: string): Promise<{ success: boolean; m3u8Path: string; error?: string }> {
   const outputDir = getHlsDir(videoId);
@@ -45,18 +48,26 @@ export async function convertMp4ToHls(videoId: string, videoPath: string): Promi
 
   const runFfmpeg = (outputOptions: string[]) => {
     return new Promise<boolean>((resolve) => {
-      ffmpeg(videoPath)
+      const command = ffmpeg(videoPath)
         .outputOptions(outputOptions)
         .output(m3u8Path)
         .on('end', () => resolve(true))
-        .on('error', () => resolve(false))
-        .run();
+        .on('error', (err) => {
+          console.warn('[FFmpeg HLS Warning]:', err?.message);
+          resolve(false);
+        });
+      
+      try {
+        command.run();
+      } catch (e) {
+        resolve(false);
+      }
     });
   };
 
-  console.log(`[HLS Transcoder] Starting ultra-fast HLS segmentation for video ${videoId} (${path.basename(videoPath)})...`);
+  console.log(`[HLS Transcoder] Starting HLS segmentation for video ${videoId} (${path.basename(videoPath)})...`);
   
-  // 1. Try fast copy first (lightning-fast, 1-3s)
+  // 1. Try fast copy first
   let success = await runFfmpeg([
     '-codec: copy',
     '-start_number 0',
@@ -65,7 +76,7 @@ export async function convertMp4ToHls(videoId: string, videoPath: string): Promi
     '-f hls'
   ]);
 
-  // 2. If copy fails (unsupported codecs), fallback to transcode
+  // 2. If copy fails, fallback to fast H.264 transcode
   if (!success) {
     console.log(`[HLS Transcoder] Fast copy failed. Transcoding to H.264/AAC for video ${videoId}...`);
     try {
@@ -75,7 +86,7 @@ export async function convertMp4ToHls(videoId: string, videoPath: string): Promi
     success = await runFfmpeg([
       '-c:v libx264',
       '-preset ultrafast',
-      '-crf 23',
+      '-crf 26',
       '-pix_fmt yuv420p',
       '-c:a aac',
       '-b:a 128k',
@@ -94,5 +105,6 @@ export async function convertMp4ToHls(videoId: string, videoPath: string): Promi
 
   return { success: false, m3u8Path: '', error: 'HLS segmentatsiyada xatolik yuz berdi.' };
 }
+
 
 

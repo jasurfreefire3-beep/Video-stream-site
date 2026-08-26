@@ -133,7 +133,7 @@ export const AnimemPlayer: React.FC<AnimemPlayerProps> = ({
     return url;
   }, [streamUrl, video.stream_url, video.id]);
 
-  // Initialize Ultra-Fast Direct MP4 Streaming (Direct Cloudflare-grade byte range streaming)
+  // Initialize Ultra-Fast HLS Streaming with Automatic Direct MP4 Fallback
   useEffect(() => {
     const videoElement = videoRef.current;
     if (!videoElement) return;
@@ -145,11 +145,6 @@ export const AnimemPlayer: React.FC<AnimemPlayerProps> = ({
 
     setIsLoading(true);
     setIsHlsActive(false);
-
-    // Direct MP4 206 Partial Content Stream - Instant load & smooth seeking
-    videoElement.src = fallbackStreamUrl;
-    videoElement.preload = 'auto';
-    videoElement.load();
 
     const handleCanPlay = () => {
       setIsLoading(false);
@@ -165,6 +160,51 @@ export const AnimemPlayer: React.FC<AnimemPlayerProps> = ({
     videoElement.addEventListener('canplay', handleCanPlay);
     videoElement.addEventListener('loadeddata', handleLoadedData);
 
+    // Try HLS first via Hls.js if supported, else fallback to direct MP4
+    if (Hls.isSupported() && targetHlsUrl) {
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+      });
+      hlsInstanceRef.current = hls;
+      hls.loadSource(targetHlsUrl);
+      hls.attachMedia(videoElement);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        setIsLoading(false);
+        setIsHlsActive(true);
+        if (autoplay) safePlay(videoElement);
+      });
+
+      hls.on(Hls.Events.ERROR, (event, data) => {
+        if (data.fatal) {
+          console.warn('[HLS Fatal Error, falling back to direct MP4]:', data);
+          hls.destroy();
+          hlsInstanceRef.current = null;
+          setIsHlsActive(false);
+          // Fallback to direct MP4 stream instantly
+          videoElement.src = fallbackStreamUrl;
+          videoElement.preload = 'auto';
+          videoElement.load();
+          if (autoplay) safePlay(videoElement);
+        }
+      });
+    } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+      // Native HLS (Safari / iOS)
+      videoElement.src = targetHlsUrl;
+      setIsHlsActive(true);
+      videoElement.load();
+      if (autoplay) safePlay(videoElement);
+    } else {
+      // Direct MP4 fallback
+      videoElement.src = fallbackStreamUrl;
+      videoElement.preload = 'auto';
+      videoElement.load();
+      if (autoplay) safePlay(videoElement);
+    }
+
     return () => {
       videoElement.removeEventListener('canplay', handleCanPlay);
       videoElement.removeEventListener('loadeddata', handleLoadedData);
@@ -173,7 +213,7 @@ export const AnimemPlayer: React.FC<AnimemPlayerProps> = ({
         hlsInstanceRef.current = null;
       }
     };
-  }, [video.id, fallbackStreamUrl, autoplay]);
+  }, [video.id, targetHlsUrl, fallbackStreamUrl, autoplay]);
 
   // Restore saved playback position
   useEffect(() => {
