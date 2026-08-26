@@ -15,6 +15,7 @@ import { verifyAdminPassword, generateAdminToken, requireAdminAuth, AuthRequest 
 import { isRequestAuthorized, refererOriginMiddleware, generateStreamToken, getAllowedDomains, updateAllowedDomains } from './security.js';
 import { handleVideoStream, restoreVideoFromPostgres, backupVideoToPostgres } from './stream.js';
 import { convertMp4ToHls, isHlsReady, getHlsDir } from './hls.js';
+import { generateUzbekSubtitles } from './subtitles-ai.js';
 
 const router = express.Router();
 
@@ -1026,6 +1027,44 @@ router.get('/v1/anime/:animeTitle/episodes', async (req: Request, res: Response)
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// AI Subtitle Generation & Serving
+router.post('/videos/:id/generate-subtitles', requireAdminAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const videoId = req.params.id;
+    const force = req.query.force === 'true';
+    const result = await generateUzbekSubtitles(videoId, force);
+    if (!result.success) {
+      return res.status(400).json({ error: result.error || 'Subtitr yaratishda xatolik yuz berdi.' });
+    }
+    res.json({
+      success: true,
+      message: 'O\'zbekcha subtitr muvaffaqiyatli generatsiya qilindi!',
+      subtitle_url: result.subtitleUrl,
+    });
+  } catch (err: any) {
+    console.error('[AI Subtitle Error]', err);
+    res.status(500).json({ error: 'AI subtitr yaratishda xatolik: ' + err.message });
+  }
+});
+
+router.get('/subtitles/:id', async (req: Request, res: Response) => {
+  try {
+    const videoId = req.params.id;
+    const cleanId = videoId.replace(/\.vtt$/, '');
+    const subtitlePath = path.join(process.cwd(), 'uploads', 'subtitles', `${cleanId}.vtt`);
+    if (!fs.existsSync(subtitlePath)) {
+      return res.status(404).send('WEBVTT\n\n1\n00:00:01.000 --> 00:00:04.000\nSubtitr topilmadi yoki hali generatsiya qilinmagan.');
+    }
+    res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    const content = fs.readFileSync(subtitlePath, 'utf-8');
+    res.send(content);
+  } catch (err: any) {
+    res.status(500).send('WEBVTT');
   }
 });
 

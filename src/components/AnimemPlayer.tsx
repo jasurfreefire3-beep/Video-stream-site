@@ -13,7 +13,8 @@ import {
   Tv, 
   ShieldCheck,
   Film,
-  Zap
+  Zap,
+  Sparkles
 } from 'lucide-react';
 import { VideoRecord } from '../types';
 
@@ -48,6 +49,46 @@ export const AnimemPlayer: React.FC<AnimemPlayerProps> = ({
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isHlsActive, setIsHlsActive] = useState(false);
+
+  const [isGeneratingSubtitle, setIsGeneratingSubtitle] = useState(false);
+  const [subtitleUrl, setSubtitleUrl] = useState<string | null>(null);
+  const [subtitleEnabled, setSubtitleEnabled] = useState(false);
+  const [subtitleStatus, setSubtitleStatus] = useState<string | null>(null);
+
+  const handleGenerateSubtitles = async () => {
+    const token = localStorage.getItem('animem_cdn_token') || '';
+    setIsGeneratingSubtitle(true);
+    setSubtitleStatus('AI orqali o\'zbekcha subtitr yaratilmoqda (barcha tillardan tarjima qilinmoqda)...');
+    try {
+      const res = await fetch(`/api/videos/${video.id}/generate-subtitles`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setSubtitleUrl(data.subtitle_url);
+        setSubtitleEnabled(true);
+        setSubtitleStatus('O\'zbekcha subtitr muvaffaqiyatli yoqildi!');
+        if (videoRef.current) {
+          const tracks = videoRef.current.textTracks;
+          for (let i = 0; i < tracks.length; i++) {
+            if (tracks[i].language === 'uz') {
+              tracks[i].mode = 'showing';
+            }
+          }
+        }
+      } else {
+        setSubtitleStatus(data.error || 'Subtitr generatsiya qilishda xatolik');
+      }
+    } catch (e: any) {
+      setSubtitleStatus('Xatolik: ' + e.message);
+    } finally {
+      setIsGeneratingSubtitle(false);
+      setTimeout(() => setSubtitleStatus(null), 5000);
+    }
+  };
 
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -349,7 +390,25 @@ export const AnimemPlayer: React.FC<AnimemPlayerProps> = ({
           setIsLoading(false);
         }}
         className="w-full h-full object-contain cursor-pointer"
-      />
+      >
+        {subtitleUrl && (
+          <track
+            kind="subtitles"
+            label="O'zbekcha (AI)"
+            src={subtitleUrl}
+            srcLang="uz"
+            default={subtitleEnabled}
+          />
+        )}
+      </video>
+
+      {/* Subtitle Status Toast Overlay */}
+      {subtitleStatus && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 bg-slate-900/95 border border-rose-500/50 text-rose-300 px-4 py-2 rounded-xl shadow-2xl backdrop-blur-md flex items-center gap-2 text-xs font-medium">
+          {isGeneratingSubtitle && <div className="w-3.5 h-3.5 border-2 border-rose-500 border-t-transparent rounded-full animate-spin" />}
+          <span>{subtitleStatus}</span>
+        </div>
+      )}
 
       {/* Loading Spinner */}
       {isLoading && (
@@ -489,9 +548,42 @@ export const AnimemPlayer: React.FC<AnimemPlayerProps> = ({
             </div>
           </div>
 
-          {/* Right Controls (Speed, PiP, Fullscreen) */}
+          {/* Right Controls (AI Subtitle, Speed, PiP, Fullscreen) */}
           <div className="flex items-center gap-2">
             
+            {/* AI Subtitle Button & Download */}
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={handleGenerateSubtitles}
+                disabled={isGeneratingSubtitle}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold transition-all ${
+                  subtitleEnabled 
+                    ? 'bg-rose-600 text-white shadow-lg shadow-rose-500/30' 
+                    : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'
+                }`}
+                title="Istalgan tildagi videoga avtomatik O'zbekcha subtitr yaratish (AI)"
+              >
+                <Sparkles className={`w-3.5 h-3.5 text-rose-400 ${isGeneratingSubtitle ? 'animate-spin' : ''}`} />
+                <span className="hidden sm:inline">
+                  {isGeneratingSubtitle ? 'Yaratilmoqda...' : subtitleEnabled ? 'UZ Subtitr (Faol)' : 'O\'zbekcha Subtitr (AI)'}
+                </span>
+                <span className="sm:hidden">UZ Sub</span>
+              </button>
+
+              {subtitleUrl && (
+                <a
+                  href={subtitleUrl}
+                  download={`${video.title || video.id}_uzbek.vtt`}
+                  className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs transition-all flex items-center justify-center"
+                  title="O'zbekcha subtitrni yuklab olish (.vtt)"
+                >
+                  <svg className="w-4 h-4 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                  </svg>
+                </a>
+              )}
+            </div>
+
             {/* Speed Menu Toggle */}
             <div className="relative">
               <button

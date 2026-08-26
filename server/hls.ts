@@ -28,10 +28,10 @@ export function isHlsReady(videoId: string): boolean {
 }
 
 /**
- * Super-fast near zero-RAM HLS segmenter using codec copy (no re-encoding)
- * Takes 1-3 seconds per 200MB video without overloading Render RAM!
+ * Robust HLS segmenter supporting MP4, MKV, WebM, etc.
+ * Tries fast codec copy first, falls back to universal H.264/AAC transcoding if codecs are incompatible.
  */
-export async function convertMp4ToHls(videoId: string, mp4Path: string): Promise<{ success: boolean; m3u8Path: string; error?: string }> {
+export async function convertMp4ToHls(videoId: string, videoPath: string): Promise<{ success: boolean; m3u8Path: string; error?: string }> {
   const outputDir = getHlsDir(videoId);
   const m3u8Path = path.join(outputDir, 'index.m3u8');
 
@@ -39,30 +39,56 @@ export async function convertMp4ToHls(videoId: string, mp4Path: string): Promise
     return { success: true, m3u8Path };
   }
 
-  if (!fs.existsSync(mp4Path)) {
-    return { success: false, m3u8Path: '', error: 'MP4 fayli diskda topilmadi.' };
+  if (!fs.existsSync(videoPath)) {
+    return { success: false, m3u8Path: '', error: 'Video fayli diskda topilmadi.' };
   }
 
-  return new Promise((resolve) => {
-    console.log(`[HLS Transcoder] Starting ultra-fast HLS segmentation for video ${videoId}...`);
-    
-    ffmpeg(mp4Path)
-      .outputOptions([
-        '-codec: copy',                // Zero CPU / Ultra Low RAM copy
-        '-start_number 0',
-        '-hls_time 4',                 // 4 second segments for rapid seeking
-        '-hls_list_size 0',            // Include all segments in index.m3u8
-        '-f hls'
-      ])
-      .output(m3u8Path)
-      .on('end', () => {
-        console.log(`[HLS Transcoder] Video ${videoId} successfully converted to HLS (m3u8 + ts chunks)!`);
-        resolve({ success: true, m3u8Path });
-      })
-      .on('error', (err: any) => {
-        console.warn(`[HLS Transcoder Warning] Failed to segment into HLS:`, err.message);
-        resolve({ success: false, m3u8Path: '', error: err.message });
-      })
-      .run();
-  });
+  const runFfmpeg = (outputOptions: string[]) => {
+    return new Promise<boolean>((resolve) => {
+      ffmpeg(videoPath)
+        .outputOptions(outputOptions)
+        .output(m3u8Path)
+        .on('end', () => resolve(true))
+        .on('error', () => resolve(false))
+        .run();
+    });
+  };
+
+  console.log(`[HLS Transcoder] Starting HLS segmentation for video ${videoId} (${path.basename(videoPath)})...`);
+  
+  // 1. Try fast copy first
+  let success = await runFfmpeg([
+    '-codec: copy',
+    '-start_number 0',
+    '-hls_time 4',
+    '-hls_list_size 0',
+    '-f hls'
+  ]);
+
+  // 2. If copy fails (e.g. MKV with HEVC/VP9/DTS/TrueHD), transcode to universal H.264 / AAC
+  if (!success) {
+    console.log(`[HLS Transcoder] Fast copy failed or unsupported codecs. Transcoding to H.264/AAC for browser compatibility (${videoId})...`);
+    try {
+      if (fs.existsSync(m3u8Path)) fs.unlinkSync(m3u8Path);
+    } catch (e) {}
+
+    success = await runFfmpeg([
+      '-c:v libx264',
+      '-preset ultrafast',
+      '-crf 23',
+      '-c:a aac',
+      '-b:a 128k',
+      '-start_number 0',
+      '-hls_time 4',
+      '-hls_list_size 0',
+      '-f hls'
+    ]);
+  }
+
+  if (success && fs.existsSync(m3u8Path)) {
+    console.log(`[HLS Transcoder] Video ${videoId} successfully converted to HLS!`);
+    return { success: true, m3u8Path };
+  }
+
+  return { success: false, m3u8Path: '', error: 'HLS segmentatsiyada xatolik yuz berdi.' };
 }

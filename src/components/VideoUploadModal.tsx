@@ -59,8 +59,10 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({
 
   const handleFileChange = (selectedFile: File) => {
     if (!selectedFile) return;
-    if (!selectedFile.type.startsWith('video/') && !selectedFile.name.endsWith('.mp4') && !selectedFile.name.endsWith('.mkv')) {
-      setError('Faqat MP4 yoki video formatdagi fayllarni tanlang.');
+    const lowerName = selectedFile.name.toLowerCase();
+    const isVideoExt = /\.(mp4|mkv|webm|avi|mov)$/.test(lowerName);
+    if (!selectedFile.type.startsWith('video/') && !isVideoExt) {
+      setError('Faqat MP4, MKV, WEBM, AVI yoki MOV formatdagi video fayllarni tanlang.');
       return;
     }
 
@@ -526,7 +528,7 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="video/mp4,video/mkv,video/webm"
+                  accept="video/mp4,video/mkv,video/x-matroska,video/webm,video/avi,video/quicktime,.mkv,.mp4,.webm,.avi,.mov"
                   className="hidden"
                   onChange={(e) => e.target.files && handleFileChange(e.target.files[0])}
                 />
@@ -537,7 +539,7 @@ export const VideoUploadModal: React.FC<VideoUploadModalProps> = ({
                   Video faylni bu yerga tashlang yoki tanlang
                 </h4>
                 <p className="text-xs text-slate-400">
-                  MP4 formatdagi yuqori sifatli anime qismlari (4GB gacha)
+                  MP4, MKV, WebM formatdagi yuqori sifatli anime qismlari (4GB gacha)
                 </p>
                 <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-[11px] text-slate-400">
                   <Zap className="w-3 h-3 text-amber-400" />
