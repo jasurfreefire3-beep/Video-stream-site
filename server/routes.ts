@@ -12,7 +12,7 @@ import {
   deleteLocalVideo
 } from './db.js';
 import { verifyAdminPassword, generateAdminToken, requireAdminAuth, AuthRequest } from './auth.js';
-import { isRequestAuthorized, generateStreamToken, getAllowedDomains, updateAllowedDomains } from './security.js';
+import { isRequestAuthorized, refererOriginMiddleware, generateStreamToken, getAllowedDomains, updateAllowedDomains } from './security.js';
 import { handleVideoStream, restoreVideoFromPostgres, backupVideoToPostgres } from './stream.js';
 import { convertMp4ToHls, isHlsReady, getHlsDir } from './hls.js';
 
@@ -534,6 +534,9 @@ router.post('/videos/upload', requireAdminAuth, upload.single('video'), async (r
 });
 
 // List all videos with search and filters
+// Apply Referer / Origin domain protection middleware (Animem.uz Domain restriction)
+router.use(refererOriginMiddleware);
+
 router.get('/videos', async (req: Request, res: Response) => {
   try {
     const search = ((req.query.search as string) || '').toLowerCase();

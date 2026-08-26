@@ -46,6 +46,31 @@ export async function updateAllowedDomains(domains: string[]): Promise<void> {
 /**
  * Checks if request is from animem.uz or authorized domain
  */
+
+import { Response, NextFunction } from 'express';
+
+/**
+ * Express middleware to check HTTP Referer and Origin headers.
+ * If request is not from animem.uz or authorized domain, rejects with 403 Forbidden.
+ */
+export async function refererOriginMiddleware(req: Request, res: Response, next: NextFunction) {
+  if (req.method === 'OPTIONS' || req.query?.preview === '1' || req.path === '/health' || req.path === '/auth/status' || req.path === '/auth/check') {
+    return next();
+  }
+
+  const token = (req.query.token as string) || (req.headers['x-stream-token'] as string);
+  const auth = await isRequestAuthorized(req, token);
+
+  if (!auth.authorized) {
+    return res.status(403).json({
+      error: '403 Forbidden',
+      message: auth.reason || 'So\'rov faqat animem.uz domeni orqali bajarilishi mumkin!',
+    });
+  }
+
+  next();
+}
+
 export async function isRequestAuthorized(req: Request, token?: string): Promise<{ authorized: boolean; reason?: string }> {
   // 0. If preview mode explicitly requested via query parameter
   if (req.query?.preview === '1') {
