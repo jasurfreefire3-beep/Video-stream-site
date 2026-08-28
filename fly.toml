@@ -1,4 +1,4 @@
-app = 'cloudflare-video'
+app = 'video-stream-site'
 primary_region = 'fra'
 
 [build]
