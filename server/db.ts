@@ -236,7 +236,15 @@ export async function initDatabaseTables(dbPool: pg.Pool) {
       }));
       saveLocalStore();
       console.log(`[PostgreSQL] ${res.rows.length} ta video ma'lumotlari yuklandi va sinxronlandi`);
+
+      // 6. Background auto-warmup disk cache & HLS
+      setTimeout(() => {
+        warmupVideosCache(res.rows).catch((err) => {
+          console.warn('[Cache Warmup Warning]:', err.message);
+        });
+      }, 500);
     } else if (localVideosStore.length > 0) {
+
       // Sync local videos to PostgreSQL if table is freshly created
       for (const v of localVideosStore) {
         try {
@@ -390,3 +398,39 @@ export function setLocalSettings(key: string, val: string) {
   localSettings[key] = val;
   saveLocalStore();
 }
+
+/**
+ * Background auto-restoration of video files to disk and pre-generation of HLS
+ * ensures instant 0ms playback with no cold-start lag after deployments or restarts.
+ */
+export async function warmupVideosCache(videoRows: any[]) {
+  const UPLOAD_DIR = path.join(process.cwd(), 'uploads', 'videos');
+  if (!fs.existsSync(UPLOAD_DIR)) {
+    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  }
+
+  // Import stream & HLS utilities dynamically to prevent circular dependencies
+  const { restoreVideoFromPostgres } = await import('./stream.js');
+  const { convertMp4ToHls, isHlsReady } = await import('./hls.js');
+
+  for (const v of videoRows) {
+    try {
+      const fileName = v.file_name || (v.file_path ? path.basename(v.file_path) : `${v.id}.mp4`);
+      const localPath = path.join(UPLOAD_DIR, fileName);
+
+      let onDisk = fs.existsSync(localPath);
+      if (!onDisk) {
+        console.log(`[Cache Warmup] Restoring ${v.title || v.id} from PostgreSQL to disk...`);
+        onDisk = await restoreVideoFromPostgres(v.id, localPath);
+      }
+
+      if (onDisk && !isHlsReady(v.id)) {
+        console.log(`[Cache Warmup] Pre-segmenting HLS for ${v.title || v.id}...`);
+        await convertMp4ToHls(v.id, localPath);
+      }
+    } catch (err: any) {
+      console.warn(`[Cache Warmup error on ${v.id}]:`, err?.message);
+    }
+  }
+}
+

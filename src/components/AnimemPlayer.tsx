@@ -157,8 +157,25 @@ export const AnimemPlayer: React.FC<AnimemPlayerProps> = ({
       setIsLoading(false);
     };
 
+    const handleVideoError = () => {
+      console.warn('[Video Element Error, attempting direct stream fallback]');
+      setIsLoading(false);
+      if (videoElement.src !== fallbackStreamUrl) {
+        if (hlsInstanceRef.current) {
+          hlsInstanceRef.current.destroy();
+          hlsInstanceRef.current = null;
+        }
+        setIsHlsActive(false);
+        videoElement.src = fallbackStreamUrl;
+        videoElement.preload = 'auto';
+        videoElement.load();
+        if (autoplay) safePlay(videoElement);
+      }
+    };
+
     videoElement.addEventListener('canplay', handleCanPlay);
     videoElement.addEventListener('loadeddata', handleLoadedData);
+    videoElement.addEventListener('error', handleVideoError);
 
     // Try HLS first via Hls.js if supported, else fallback to direct MP4
     if (Hls.isSupported() && targetHlsUrl) {
@@ -167,6 +184,10 @@ export const AnimemPlayer: React.FC<AnimemPlayerProps> = ({
         lowLatencyMode: true,
         maxBufferLength: 30,
         maxMaxBufferLength: 60,
+        manifestLoadingTimeOut: 5000,
+        manifestLoadingMaxRetry: 2,
+        levelLoadingTimeOut: 5000,
+        levelLoadingMaxRetry: 2,
       });
       hlsInstanceRef.current = hls;
       hls.loadSource(targetHlsUrl);
@@ -179,16 +200,18 @@ export const AnimemPlayer: React.FC<AnimemPlayerProps> = ({
       });
 
       hls.on(Hls.Events.ERROR, (event, data) => {
-        if (data.fatal) {
-          console.warn('[HLS Fatal Error, falling back to direct MP4]:', data);
+        if (data.fatal || data.details === 'manifestLoadError' || data.details === 'manifestLoadTimeOut') {
+          console.warn('[HLS Fatal/Load Error, falling back to direct MP4]:', data);
           hls.destroy();
           hlsInstanceRef.current = null;
           setIsHlsActive(false);
           // Fallback to direct MP4 stream instantly
-          videoElement.src = fallbackStreamUrl;
-          videoElement.preload = 'auto';
-          videoElement.load();
-          if (autoplay) safePlay(videoElement);
+          if (videoElement.src !== fallbackStreamUrl) {
+            videoElement.src = fallbackStreamUrl;
+            videoElement.preload = 'auto';
+            videoElement.load();
+            if (autoplay) safePlay(videoElement);
+          }
         }
       });
     } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
@@ -208,6 +231,7 @@ export const AnimemPlayer: React.FC<AnimemPlayerProps> = ({
     return () => {
       videoElement.removeEventListener('canplay', handleCanPlay);
       videoElement.removeEventListener('loadeddata', handleLoadedData);
+      videoElement.removeEventListener('error', handleVideoError);
       if (hlsInstanceRef.current) {
         hlsInstanceRef.current.destroy();
         hlsInstanceRef.current = null;

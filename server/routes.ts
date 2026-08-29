@@ -836,26 +836,112 @@ router.get('/hls/:id/:file?', async (req: Request, res: Response) => {
       filePath = localUploadPath;
     }
 
-    // If HLS does not exist yet, generate on the fly
-    if (!fs.existsSync(m3u8Path)) {
-      let mp4Exists = fs.existsSync(filePath);
-      if (!mp4Exists) {
-        console.log(`[HLS] MP4 not found on disk. Restoring from PostgreSQL for ${videoId}...`);
-        mp4Exists = await restoreVideoFromPostgres(videoId, localUploadPath);
-        if (mp4Exists) filePath = localUploadPath;
+    // Detect if request is from a browser direct navigation or native <video> tag
+    const isNavigate = req.headers['sec-fetch-mode'] === 'navigate' || req.headers['sec-fetch-dest'] === 'document' || req.headers.accept?.includes('text/html');
+    const isNativeMediaTag = req.headers['sec-fetch-dest'] === 'video' || req.headers['sec-fetch-dest'] === 'audio' || req.headers.accept?.includes('video/');
+
+    // If native browser <video> tag requests .m3u8 directly without JS Hls engine (like Firefox built-in media viewer),
+    // redirect to standard MP4 HTTP 206 stream so it decodes and plays instantly.
+    if (isNativeMediaTag && (requestedFile === 'index.m3u8' || requestedFile.endsWith('.m3u8') || !requestedFile.includes('.'))) {
+      return res.redirect(`/api/stream/${videoId}${token ? `?token=${encodeURIComponent(token)}` : ''}`);
+    }
+
+    // If user opens .m3u8 directly in browser address bar (document navigation) and raw is not requested, serve self-contained responsive player
+    if (isNavigate && req.query.raw !== '1' && (requestedFile === 'index.m3u8' || requestedFile.endsWith('.m3u8') || !requestedFile.includes('.'))) {
+      const streamSrc = `/api/stream/${videoId}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+      const rawM3u8Url = `/api/hls/${videoId}/index.m3u8${token ? `?token=${encodeURIComponent(token)}&raw=1` : '?raw=1'}`;
+      const playerHtml = `<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>${video.title || videoId} - Animem.uz</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; display: flex; align-items: center; justify-content: center; }
+    video { width: 100%; height: 100%; max-width: 100%; max-height: 100%; object-fit: contain; background: #000; outline: none; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+</head>
+<body>
+  <video id="player" controls autoplay playsinline preload="auto"></video>
+  <script>
+    const v = document.getElementById('player');
+    const hlsUrl = "${rawM3u8Url}";
+    const mp4Url = "${streamSrc}";
+
+    let hls = null;
+    function playMp4Fallback() {
+      if (hls) { try { hls.destroy(); } catch(e){} hls = null; }
+      if (v.src !== mp4Url) {
+        v.src = mp4Url;
+        v.load();
+        v.play().catch(function(){});
       }
-      
-      if (mp4Exists) {
-        await convertMp4ToHls(videoId, filePath);
-      } else {
-        return res.status(404).json({ error: 'HLS video fayli mavjud emas.' });
+    }
+
+    if (Hls.isSupported()) {
+      hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+        manifestLoadingTimeOut: 4000,
+        manifestLoadingMaxRetry: 2
+      });
+      hls.loadSource(hlsUrl);
+      hls.attachMedia(v);
+      hls.on(Hls.Events.MANIFEST_PARSED, function() {
+        v.play().catch(function(){});
+      });
+      hls.on(Hls.Events.ERROR, function(e, data) {
+        if (data.fatal) {
+          playMp4Fallback();
+        }
+      });
+    } else if (v.canPlayType('application/vnd.apple.mpegurl')) {
+      v.src = hlsUrl;
+      v.addEventListener('error', playMp4Fallback);
+      v.play().catch(function(){});
+    } else {
+      playMp4Fallback();
+    }
+  </script>
+</body>
+</html>`;
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache');
+      return res.send(playerHtml);
+    }
+
+    // If HLS does not exist yet, trigger background restore & generation
+    if (!fs.existsSync(m3u8Path)) {
+      (async () => {
+        let mp4Exists = fs.existsSync(filePath);
+        if (!mp4Exists) {
+          mp4Exists = await restoreVideoFromPostgres(videoId, localUploadPath);
+          if (mp4Exists) filePath = localUploadPath;
+        }
+        if (mp4Exists) {
+          await convertMp4ToHls(videoId, filePath);
+        }
+      })().catch(console.error);
+
+      // If HLS is still converting, redirect or wait a brief moment
+      let waitCount = 0;
+      while (!fs.existsSync(m3u8Path) && waitCount < 15) {
+        await new Promise((r) => setTimeout(r, 200));
+        waitCount++;
+      }
+
+      if (!fs.existsSync(m3u8Path)) {
+        // Redirect client player to instant MP4 stream
+        return res.redirect(`/api/stream/${videoId}${token ? `?token=${encodeURIComponent(token)}` : ''}`);
       }
     }
 
     // 1. Serve M3U8 Master / Media Playlist
     if (requestedFile === 'index.m3u8' || requestedFile.endsWith('.m3u8') || !requestedFile.includes('.')) {
       if (!fs.existsSync(m3u8Path)) {
-        return res.status(404).json({ error: 'Playlist topilmadi.' });
+        return res.redirect(`/api/stream/${videoId}${token ? `?token=${encodeURIComponent(token)}` : ''}`);
       }
 
       // Append token & preview parameters to all .ts chunk URLs in playlist
@@ -863,43 +949,6 @@ router.get('/hls/:id/:file?', async (req: Request, res: Response) => {
       if (token) queryParams.push(`token=${encodeURIComponent(token)}`);
       if (preview) queryParams.push(`preview=1`);
       const queryString = queryParams.length > 0 ? `?${queryParams.join('&')}` : '';
-
-      // If user opens .m3u8 directly in browser address bar (HTML request) and raw is not requested, serve clean fullscreen player
-      if (req.headers.accept?.includes('text/html') && req.query.raw !== '1' && req.headers['sec-fetch-dest'] !== 'empty') {
-        const rawM3u8Url = `/api/hls/${videoId}/index.m3u8${queryString ? queryString + '&raw=1' : '?raw=1'}`;
-        const playerHtml = `<!DOCTYPE html>
-<html lang="uz">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>${video.title || videoId}</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
-    video { width: 100%; height: 100%; object-fit: contain; background: #000; outline: none; border: none; display: block; }
-  </style>
-  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-</head>
-<body>
-  <video id="video" controls autoplay playsinline></video>
-  <script>
-    const video = document.getElementById('video');
-    const videoSrc = "${rawM3u8Url}";
-    if (Hls.isSupported()) {
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: true
-      });
-      hls.loadSource(videoSrc);
-      hls.attachMedia(video);
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = videoSrc;
-    }
-  </script>
-</body>
-</html>`;
-        return res.send(playerHtml);
-      }
 
       let content = fs.readFileSync(m3u8Path, 'utf-8');
 

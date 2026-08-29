@@ -7,119 +7,137 @@ const CHUNK_SIZE = 1024 * 1024 * 16; // 16MB optimal chunk size for supercharged
 const UPLOAD_DIR = path.join(process.cwd(), 'uploads', 'videos');
 
 export async function handleVideoStream(req: Request, res: Response, videoRecord: any) {
-  // Disable Nagle's algorithm for instant streaming packet delivery
-  if (res.socket) {
-    res.socket.setNoDelay(true);
-  }
-  // Ensure upload directory exists
-  if (!fs.existsSync(UPLOAD_DIR)) {
-    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-  }
-
-  let filePath = videoRecord.file_path;
-  const fileName = videoRecord.file_name || (filePath ? path.basename(filePath) : `${videoRecord.id}.mp4`);
-  const localUploadPath = path.join(UPLOAD_DIR, fileName);
-
-  // Check disk paths
-  if (fs.existsSync(localUploadPath)) {
-    filePath = localUploadPath;
-  } else if (!filePath || !fs.existsSync(localUploadPath)) {
-    // If missing on disk, serve instantly directly from database!
-    if (!currentlyRestoring.has(videoRecord.id)) {
-      currentlyRestoring.add(videoRecord.id);
-      // Run disk restore in background so subsequent streams are purely disk I/O
-      restoreVideoFromPostgres(videoRecord.id, localUploadPath)
-        .finally(() => currentlyRestoring.delete(videoRecord.id))
-        .catch(console.error);
+  try {
+    // Disable Nagle's algorithm for instant streaming packet delivery
+    if (res.socket) {
+      res.socket.setNoDelay(true);
     }
-    return serveDirectlyFromPostgres(req, res, videoRecord);
-  }
-
-  const stat = fs.statSync(filePath);
-  const fileSize = stat.size || parseInt(videoRecord.file_size, 10);
-  const range = req.headers.range;
-  const etag = `"mp4-${videoRecord.id}-${fileSize}-${Math.floor(stat.mtimeMs)}"`;
-  const lastModified = stat.mtime.toUTCString();
-
-  // CORS and standard Cloudflare-grade media headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Type, ETag, Last-Modified');
-  res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('ETag', etag);
-  res.setHeader('Last-Modified', lastModified);
-
-  // Handle client cache verification
-  if (req.headers['if-none-match'] === etag || req.headers['if-modified-since'] === lastModified) {
-    return res.status(304).end();
-  }
-
-  // Asynchronously increment view count in PostgreSQL on first play
-  if (!range || range.startsWith('bytes=0-')) {
-    incrementVideoViews(videoRecord.id).catch(() => {});
-  }
-
-  // Handle HEAD requests (instant video metadata without transferring body)
-  if (req.method === 'HEAD') {
-    res.setHeader('Content-Type', videoRecord.mime_type || 'video/mp4');
-    res.setHeader('Content-Length', fileSize);
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-    return res.status(200).end();
-  }
-
-  // Handle HTTP 206 Partial Content (Byte Range Request - Instant Seek)
-  if (range) {
-    const parts = range.replace(/bytes=/, '').split('-');
-    const start = parseInt(parts[0], 10);
-    let end = parts[1] ? parseInt(parts[1], 10) : NaN;
-
-    if (isNaN(start) || start >= fileSize) {
-      res.status(416).setHeader('Content-Range', `bytes */${fileSize}`);
-      return res.end();
+    // Ensure upload directory exists
+    if (!fs.existsSync(UPLOAD_DIR)) {
+      fs.mkdirSync(UPLOAD_DIR, { recursive: true });
     }
 
-    if (isNaN(end) || end >= fileSize) {
-      end = Math.min(start + CHUNK_SIZE - 1, fileSize - 1);
+    let filePath = videoRecord.file_path;
+    const fileName = videoRecord.file_name || (filePath ? path.basename(filePath) : `${videoRecord.id}.mp4`);
+    const localUploadPath = path.join(UPLOAD_DIR, fileName);
+
+    let hasLocalFile = false;
+    // Check disk paths
+    if (fs.existsSync(localUploadPath)) {
+      filePath = localUploadPath;
+      hasLocalFile = true;
+    } else if (filePath && fs.existsSync(filePath)) {
+      hasLocalFile = true;
     }
 
-    const chunksize = end - start + 1;
-    const fileStream = fs.createReadStream(filePath, { 
-      start, 
-      end, 
-      highWaterMark: 1024 * 1024 // 1MB internal buffer for ultra-fast I/O throughput
-    });
+    if (!hasLocalFile) {
+      // If missing on disk, serve instantly directly from database!
+      if (!currentlyRestoring.has(videoRecord.id)) {
+        currentlyRestoring.add(videoRecord.id);
+        // Run disk restore in background so subsequent streams are purely disk I/O
+        restoreVideoFromPostgres(videoRecord.id, localUploadPath)
+          .finally(() => currentlyRestoring.delete(videoRecord.id))
+          .catch(console.error);
+      }
+      return await serveDirectlyFromPostgres(req, res, videoRecord);
+    }
 
-    res.writeHead(206, {
-      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-      'Content-Length': chunksize,
-      'Content-Type': videoRecord.mime_type || 'video/mp4',
-      'Cache-Control': 'public, max-age=31536000, immutable',
-    });
+    const stat = fs.statSync(filePath);
+    const fileSize = stat.size || parseInt(videoRecord.file_size, 10) || 0;
+    const range = req.headers.range;
+    const etag = `"mp4-${videoRecord.id}-${fileSize}-${Math.floor(stat.mtimeMs)}"`;
+    const lastModified = stat.mtime.toUTCString();
 
-    fileStream.pipe(res);
-    fileStream.on('error', (err) => {
-      console.error('[Stream error]', err);
-      if (!res.headersSent) res.status(500).end();
-    });
-  } else {
-    // Standard 200 Full Stream (fast linear streaming)
-    res.writeHead(200, {
-      'Content-Length': fileSize,
-      'Content-Type': videoRecord.mime_type || 'video/mp4',
-      'Cache-Control': 'public, max-age=86400',
-    });
-    fs.createReadStream(filePath, { highWaterMark: 1024 * 1024 }).pipe(res);
+    // CORS and standard Cloudflare-grade media headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Type, ETag, Last-Modified');
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('ETag', etag);
+    res.setHeader('Last-Modified', lastModified);
+
+    // Handle client cache verification
+    if (req.headers['if-none-match'] === etag || req.headers['if-modified-since'] === lastModified) {
+      return res.status(304).end();
+    }
+
+    // Asynchronously increment view count in PostgreSQL on first play
+    if (!range || range.startsWith('bytes=0-')) {
+      incrementVideoViews(videoRecord.id).catch(() => {});
+    }
+
+    // Handle HEAD requests (instant video metadata without transferring body)
+    if (req.method === 'HEAD') {
+      res.setHeader('Content-Type', videoRecord.mime_type || 'video/mp4');
+      res.setHeader('Content-Length', fileSize);
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      return res.status(200).end();
+    }
+
+    // Handle HTTP 206 Partial Content (Byte Range Request - Instant Seek)
+    if (range) {
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      let end = parts[1] ? parseInt(parts[1], 10) : NaN;
+
+      if (isNaN(start) || start >= fileSize) {
+        res.status(416).setHeader('Content-Range', `bytes */${fileSize}`);
+        return res.end();
+      }
+
+      if (isNaN(end) || end >= fileSize) {
+        end = Math.min(start + CHUNK_SIZE - 1, fileSize - 1);
+      }
+
+      const chunksize = end - start + 1;
+      const fileStream = fs.createReadStream(filePath, { 
+        start, 
+        end, 
+        highWaterMark: 1024 * 1024 // 1MB internal buffer for ultra-fast I/O throughput
+      });
+
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Content-Length': chunksize,
+        'Content-Type': videoRecord.mime_type || 'video/mp4',
+        'Cache-Control': 'public, max-age=31536000, immutable',
+      });
+
+      fileStream.pipe(res);
+      fileStream.on('error', (err) => {
+        console.error('[Stream error]', err);
+        if (!res.headersSent) res.status(500).end();
+      });
+    } else {
+      // Standard 200 Full Stream (fast linear streaming)
+      res.writeHead(200, {
+        'Content-Length': fileSize,
+        'Content-Type': videoRecord.mime_type || 'video/mp4',
+        'Cache-Control': 'public, max-age=86400',
+      });
+      fs.createReadStream(filePath, { highWaterMark: 1024 * 1024 }).pipe(res);
+    }
+  } catch (err: any) {
+    console.error('[handleVideoStream error]', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Video oqimida xatolik: ' + err.message });
+    }
   }
 }
-
 
 const currentlyRestoring = new Set<string>();
 
 async function serveDirectlyFromPostgres(req: Request, res: Response, videoRecord: any) {
   const CHUNK_SIZE = 5 * 1024 * 1024; // DB chunk size
-  const fileSize = parseInt(videoRecord.file_size, 10);
+  const fileSize = parseInt(videoRecord.file_size, 10) || 0;
   const range = req.headers.range;
+
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Type, ETag, Last-Modified');
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
 
   if (!range || range.startsWith('bytes=0-')) {
     incrementVideoViews(videoRecord.id).catch(() => {});
@@ -129,6 +147,11 @@ async function serveDirectlyFromPostgres(req: Request, res: Response, videoRecor
     res.setHeader('Content-Type', videoRecord.mime_type || 'video/mp4');
     res.setHeader('Content-Length', fileSize);
     return res.status(200).end();
+  }
+
+  if (fileSize <= 0) {
+    res.status(404).json({ error: 'Video fayli ma\'lumotlar bazasida topilmadi.' });
+    return;
   }
 
   let start = 0;
@@ -144,8 +167,8 @@ async function serveDirectlyFromPostgres(req: Request, res: Response, videoRecor
       return res.end();
     }
     if (isNaN(end) || end >= fileSize) {
-      // 16MB standard request size
-      end = Math.min(start + (1024 * 1024 * 16) - 1, fileSize - 1);
+      // 8MB standard buffer window
+      end = Math.min(start + (1024 * 1024 * 8) - 1, fileSize - 1);
     }
     
     res.writeHead(206, {
@@ -164,7 +187,9 @@ async function serveDirectlyFromPostgres(req: Request, res: Response, videoRecor
 
   try {
     const pool = await getDbPool();
-    if (!pool) return res.end();
+    if (!pool) {
+      return res.end();
+    }
 
     const startChunk = Math.floor(start / CHUNK_SIZE);
     const endChunk = Math.floor(end / CHUNK_SIZE);
@@ -174,9 +199,16 @@ async function serveDirectlyFromPostgres(req: Request, res: Response, videoRecor
       const dbRes = await pool.query('SELECT data FROM video_chunks WHERE video_id = $1 AND chunk_index = $2', [videoRecord.id, c]);
       if (dbRes.rows.length > 0) {
         let chunkData: Buffer = dbRes.rows[0].data;
+        if (!Buffer.isBuffer(chunkData)) {
+          chunkData = Buffer.from(chunkData);
+        }
         let chunkStartOffset = (c === startChunk) ? start % CHUNK_SIZE : 0;
         let chunkEndOffset = (c === endChunk) ? end % CHUNK_SIZE : chunkData.length - 1;
         
+        // Ensure bounds are valid
+        chunkStartOffset = Math.max(0, Math.min(chunkStartOffset, chunkData.length - 1));
+        chunkEndOffset = Math.max(chunkStartOffset, Math.min(chunkEndOffset, chunkData.length - 1));
+
         const slice = chunkData.subarray(chunkStartOffset, chunkEndOffset + 1);
         const canContinue = res.write(slice);
         
@@ -186,7 +218,7 @@ async function serveDirectlyFromPostgres(req: Request, res: Response, videoRecor
       }
     }
     res.end();
-  } catch (err) {
+  } catch (err: any) {
     console.error('[DB Stream error]', err);
     if (!res.headersSent) res.status(500).end();
     else res.end();
